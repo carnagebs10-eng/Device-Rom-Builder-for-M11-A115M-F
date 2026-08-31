@@ -1,218 +1,111 @@
-name: Universal Self-Detecting Samsung ROM Compiler
+name: Build Samsung M11 Custom ROM
 
 on:
   workflow_dispatch:
     inputs:
+      firmware_url:
+        description: 'Direct Link to Samsung Stock Firmware AP (.tar.md5 / .tar / .zip / .7z)'
+        required: true
+        type: string
       gsi_url:
-        description: 'Direct Download Link to Custom GSI (.img / .xz / .7z)'
+        description: 'Direct Link to GSI Image (.img, .xz, .zip, .7z)'
         required: true
-        default: ''
-      samsung_firmware_url:
-        description: 'Direct Link to Official Samsung Stock Firmware (.zip)'
+        type: string
+      gsi_name:
+        description: 'GSI Name / Label (e.g., PixelOS_A14_System)'
         required: true
-        default: ''
+        default: 'GSI_System'
+        type: string
+      rom_name:
+        description: 'Output ROM Name (e.g., PixelOS_A14_arm64-M11)'
+        required: true
+        default: 'PixelOS_A14_arm64-M11'
+        type: string
       include_magisk:
-        description: 'Tick to inject Magisk Root Execution binaries automatically'
+        description: 'Include Magisk (Root)'
         required: false
         type: boolean
         default: false
 
 jobs:
-  compile:
+  build:
     runs-on: ubuntu-latest
+
     steps:
-    - name: Checkout Source Repository
-      uses: actions/checkout@v4
+      - name: Checkout Repository
+        uses: actions/checkout@v4
 
-    - name: Deploy Parallel Toolchain Utilities
-      run: |
-        sudo apt-get update
-        sudo apt-get install -y aria2 pixz p7zip-full pigz android-sdk-libsparse-utils zip jq
+      - name: Install System Dependencies & Build Tools
+        run: |
+          sudo apt-get update -y
+          sudo apt-get install -y --no-install-recommends \
+            wget curl ca-certificates unxz zip p7zip-full lz4 \
+            android-sdk-libsparse-utils python3 python3-pip simg2img \
+            build-essential cmake libssl-dev zlib1g-dev coreutils
 
-    - name: Allocate Workspace Blocks
-      run: |
-        mkdir -p workspace/out_zip
-        mkdir -p workspace/stock_extracted
-        mkdir -p workspace/extracted_partitions
+      - name: Ensure Android Partition Tools (lpmake / lpunpack)
+        run: |
+          mkdir -p bin
+          if ! command -v lpmake &> /dev/null; then
+            sudo apt-get install -y android-sdk-platform-tools-common android-tools-fs-utils || true
+          fi
+          echo "$GITHUB_WORKSPACE/bin" >> $GITHUB_PATH
 
-    - name: Parallel Download Sourcing Engine
-      run: |
-        cd workspace
-        aria2c -x 16 -s 16 -j 2 \
-          "${{ github.event.inputs.gsi_url }}" \
-          "${{ github.event.inputs.samsung_firmware_url }}"
-        
-        GSI_FILE=$(basename "${{ github.event.inputs.gsi_url }}")
-        
-        if [[ "$GSI_FILE" == *.xz ]]; then
-            pixz -d "$GSI_FILE" system.img
-        elif [[ "$GSI_FILE" == *.7z ]]; then
-            7z x "$GSI_FILE" -o.
-            mv *.img system.img
-        else
-            mv "$GSI_FILE" system.img 2>/dev/null || true
-        fi
-        
-        echo "FINAL_GSI_URL=${{ github.event.inputs.gsi_url }}" >> $GITHUB_ENV
-
-    - name: Extract Samsung AP Firmware Layers
-      run: |
-        cd workspace
-        echo "[-] Searching dynamically for downloaded firmware zip layout..."
-        
-        # Robust Dynamic Matching: Find any file in the workspace ending in .zip or matching firmware structures
-        ZIP_MATCH=$(ls *.zip 2>/dev/null | head -n 1 || ls download* 2>/dev/null | head -n 1)
-        
-        if [ -n "$ZIP_MATCH" ]; then
-            echo "[+] Found Target Firmware Archive: $ZIP_MATCH"
-            7z x "$ZIP_MATCH" -ostock_extracted/
-        else
-            echo "[!] ERROR: Downloaded firmware archive file could not be mapped!"
+      - name: Download & Extract Raw Inputs with Retry Validation
+        run: |
+          mkdir -p workspace/downloads
+          cd workspace/downloads
+          
+          echo "=== Downloading Stock Firmware AP File ==="
+          wget --retry-connrefused --waitretry=3 --tries=5 -O stock_ap_raw "${{ github.event.inputs.firmware_url }}" || { echo "Firmware download failed!"; exit 1; }
+          
+          if 7z t stock_ap_raw >/dev/null 2>&1; then
+            echo "Extracting 7z/ZIP archive..."
+            7z x -y stock_ap_raw -o.
+          elif tar -tf stock_ap_raw >/dev/null 2>&1; then
+            echo "Extracting TAR archive..."
+            tar -xf stock_ap_raw
+          else
+            echo "Unknown or corrupt AP format!"
             exit 1
-        fi
-        
-        cd stock_extracted
-        AP_FILE=$(ls AP_*.tar.md5 2>/dev/null || ls AP_*.tar 2>/dev/null)
-        
-        if [ -n "$AP_FILE" ]; then
-            mv "$AP_FILE" AP_firmware.tar
-            tar -xf AP_firmware.tar boot.img super.img 2>/dev/null || tar -xf AP_firmware.tar
-            
-            mv boot.img ../boot 2>/dev/null || touch ../boot
-            mv super.img ../super_stock.img
-        else
-            echo "[!] ERROR: AP tar package file was not found inside the firmware zip!"
+          fi
+
+          echo "=== Downloading GSI Image: ${{ github.event.inputs.gsi_name }} ==="
+          wget --retry-connrefused --waitretry=3 --tries=5 -O base_gsi_raw "${{ github.event.inputs.gsi_url }}" || { echo "GSI download failed!"; exit 1; }
+          
+          if [[ "${{ github.event.inputs.gsi_url }}" == *.xz ]] || 7z t base_gsi_raw | grep -i xz >/dev/null 2>&1; then
+            mv base_gsi_raw base_gsi.img.xz
+            unxz -f base_gsi.img.xz
+          elif 7z t base_gsi_raw >/dev/null 2>&1; then
+            7z x -y base_gsi_raw -o.
+            mv *.img base_gsi.img 2>/dev/null || true
+          else
+            mv base_gsi_raw base_gsi.img
+          fi
+
+          if [ ! -s base_gsi.img ]; then
+            echo "Error: Extracted base_gsi.img is empty or missing!"
             exit 1
-        fi
+          fi
 
-    - name: Set Up Local Repository Binaries (Dot/Slash Format)
-      run: |
-        cp lpmake workspace/
-        cp lpunpack workspace/
-        cd workspace
-        chmod +x ./lpmake ./lpunpack
-        echo "[+] Local repository binary toolchains configured safely."
+      - name: Download Magisk v30.7 Payload
+        if: ${{ inputs.include_magisk }}
+        run: |
+          mkdir -p tools/magisk
+          echo "=== Fetching Magisk v30.7 Archive ==="
+          wget --retry-connrefused --waitretry=3 --tries=5 -O tools/magisk/magisk.apk "https://github.com/topjohnwu/Magisk/releases/download/v30.7/Magisk-v30.7.apk"
+          
+          cd tools/magisk
+          7z x -y magisk.apk
+          cd ../..
 
-    - name: Unpack Super and Deep-Analyze Architecture
-      run: |
-        cd workspace
-        simg2img super_stock.img super_raw.img 2>/dev/null || mv super_stock.img super_raw.img
-        
-        ./lpunpack super_raw.img extracted_partitions/
-        
-        SUPER_SIZE=$(stat -c%s super_raw.img)
-        echo "DETECTED_SUPER_SIZE=$SUPER_SIZE" >> $GITHUB_ENV
-        
-        echo "[-] Probing extracted vendor driver profiles for hardware configuration tracking..."
-        VENDOR_ABI=$(strings extracted_partitions/vendor.img | grep -m 1 "ro.vendor.product.cpu.abi=" | cut -d'=' -f2 || strings extracted_partitions/vendor.img | grep -m 1 "ro.product.cpu.abi=" | cut -d'=' -f2)
-        
-        if [ -z "$VENDOR_ABI" ]; then VENDOR_ABI="arm64-v8a"; fi
-        echo "[+] Factory firmware hardware platform detected as: $VENDOR_ABI"
-        
-        TARGET_ARCH="arm64"
-        IS_BINDER32="false"
-        
-        if [[ "$VENDOR_ABI" == *v7* || "$VENDOR_ABI" == *arm32* || "${{ github.event.inputs.samsung_firmware_url }}" == *M115* || "${{ github.event.inputs.samsung_firmware_url }}" == *A115* ]]; then
-            TARGET_ARCH="a64-binder32"
-            IS_BINDER32="true"
-        fi
-        
-        echo "DETECTED_ARCH=$TARGET_ARCH" >> $GITHUB_ENV
-        echo "IS_BINDER32=$IS_BINDER32" >> $GITHUB_ENV
-        
-        rm -f extracted_partitions/system.img
-        mv system.img extracted_partitions/system.img
+      - name: Execute Build Pipeline
+        run: |
+          chmod +x ./scripts/build_m11.sh
+          ./scripts/build_m11.sh "${{ github.event.inputs.rom_name }}" "${{ github.event.inputs.include_magisk }}" "${{ github.event.inputs.gsi_name }}"
 
-    - name: Scrape Android OS Target Version
-      run: |
-        cd workspace
-        GSI_URL_LOWER=$(echo "${{ env.FINAL_GSI_URL }}" | tr '[:upper:]' '[:lower:]')
-        
-        ANDROID_VER="A14"
-        if [[ "$GSI_URL_LOWER" == *a16* || "$GSI_URL_LOWER" == *v16* || "$GSI_URL_LOWER" == *android16* ]]; then 
-            ANDROID_VER="A16"
-        elif [[ "$GSI_URL_LOWER" == *a15* || "$GSI_URL_LOWER" == *v15* || "$GSI_URL_LOWER" == *android15* || "$GSI_URL_LOWER" == *7\.1* ]]; then 
-            ANDROID_VER="A15"
-        fi
-        
-        echo "ANDROID_VER=$ANDROID_VER" >> $GITHUB_ENV
-
-    - name: Dynamic Inject Optional Addon Sub-Modules (Magisk Only)
-      run: |
-        cd workspace
-        
-        if [ "${{ github.event.inputs.include_magisk }}" = "true" ]; then
-            echo "[+] Magisk option checked! Injecting root binaries..."
-            aria2c -x 8 -s 8 "https://github.com/topjohnwu/Magisk/releases/download/v30.7/Magisk-v30.7.apk" -O magisk.apk
-            if [ -f "magisk.apk" ]; then
-                mkdir -p out_zip/META-INF/com/google/android/magisk/
-                mv magisk.apk out_zip/META-INF/com/google/android/magisk/magisk.zip
-            fi
-        fi
-
-    - name: Low-RAM Execution Guard Configuration
-      run: |
-        cd workspace
-        if [ "${{ env.IS_BINDER32 }}" = "true" ]; then
-            echo "ro.config.low_ram=true" >> out_zip/META-INF/zbin/configs/file_types.config
-            echo "dalvik.vm.heapstartsize=8m" >> out_zip/META-INF/zbin/configs/file_types.config
-            echo "dalvik.vm.heapgrowthlimit=128m" >> out_zip/META-INF/zbin/configs/file_types.config
-        fi
-
-    - name: Universal Dynamic Super Partition Reconstruction (Dot/Slash Format)
-      run: |
-        cd workspace
-        cd extracted_partitions
-        
-        LP_CMD="../lpmake --metadata-size 65536 --super-name super --metadata-slots 2 --device super:${{ env.DETECTED_SUPER_SIZE }} --sparse --output ../super.new.img"
-        GROUP_SIZE=$((${{ env.DETECTED_SUPER_SIZE }} - 2097152))
-        LP_CMD="$LP_CMD --group main:$GROUP_SIZE"
-        
-        for part_file in *.img; do
-            part_name="${part_file%.img}"
-            LP_CMD="$LP_CMD --partition ${part_name}:readonly:0:main --image ${part_name}=./${part_file}"
-        done
-        
-        echo "Executing Universal Build Map..."
-        eval $LP_CMD
-
-    - name: Structural Text Matching Configuration
-      run: |
-        cp -r template/* workspace/out_zip/ 2>/dev/null || true
-        FILENAME_EXT=$(basename "${{ env.FINAL_GSI_URL }}" | cut -d'?' -f1)
-        
-        echo "ROM_NAME=Custom_GSI_${{ env.ANDROID_VER }}_${{ env.DETECTED_ARCH }}" > workspace/out_zip/META-INF/addons/info
-        echo "SOURCE_LINK=${{ env.FINAL_GSI_URL }}" >> workspace/out_zip/META-INF/addons/info
-        echo "HARDWARE_ABI_RESTRICTION=${{ env.DETECTED_ARCH }}" >> workspace/out_zip/META-INF/addons/info
-        echo "Custom ROM built on $(date +'%Y%m%d')" > workspace/out_zip/META-INF/zbin/version
-        
-        echo "gsi_source_file_name_target=$FILENAME_EXT" >> workspace/out_zip/META-INF/zbin/configs/file_types.config
-        echo "detected_device_binder32_lock=${{ env.IS_BINDER32 }}" >> workspace/out_zip/META-INF/zbin/configs/file_types.config
-        echo "target_android_version=${{ env.ANDROID_VER }}" >> workspace/out_zip/META-INF/zbin/configs/units.config
-        echo "active_architecture_profile=${{ env.DETECTED_ARCH }}" >> workspace/out_zip/META-INF/zbin/configs/units.config
-
-    - name: Compress Nested extra.zip Addon Package
-      run: |
-        cd workspace/out_zip/META-INF/addons/
-        if [ -d "extra_source" ]; then
-            cd extra_source
-            zip -r9 ../extra.zip .
-            cd ..
-            rm -rf extra_source
-        fi
-
-    - name: Multi-Threaded Heavy Compression Assemble
-      run: |
-        mv workspace/super.new.img workspace/out_zip/
-        mv workspace/boot workspace/out_zip/boot
-        
-        cd workspace/out_zip
-        zip -r -0 ../../temp_rom.zip .
-        mv ../../temp_rom.zip ../../CustomROM_${{ env.ANDROID_VER }}_${{ env.DETECTED_ARCH }}_Flashable.zip
-
-    - name: Upload Finished Build Artifacts
-      uses: actions/upload-artifact@v4
-      with:
-        name: Universal-Samsung-ROM-Package
-        path: "*.zip"
-        retention-days: 1
+      - name: Upload Flashable ZIP Package
+        uses: actions/upload-artifact@v4
+        with:
+          name: ${{ github.event.inputs.rom_name }}
+          path: workspace/output/*.zip
