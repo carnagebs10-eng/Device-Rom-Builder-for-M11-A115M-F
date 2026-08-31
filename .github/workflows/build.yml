@@ -41,15 +41,24 @@ jobs:
           sudo apt-get install -y --no-install-recommends \
             wget curl ca-certificates xz-utils zip p7zip-full lz4 \
             android-sdk-libsparse-utils python3 python3-pip \
-            build-essential cmake libssl-dev zlib1g-dev coreutils
+            build-essential cmake libssl-dev zlib1g-dev coreutils git
           sudo apt-get install -y android-tools-bin || sudo apt-get install -y android-tools-fs-utils || true
 
-      - name: Ensure Android Partition Tools (lpmake / lpunpack)
+      - name: Install LP Tools (lpmake / lpunpack)
         run: |
           mkdir -p bin
-          if ! command -v lpmake &> /dev/null; then
-            sudo apt-get install -y android-sdk-platform-tools-common || true
-          fi
+          echo "=== Fetching Prebuilt lpunpack & lpmake Binaries ==="
+          wget -q https://raw.githubusercontent.com/seba-ubuntu/7zx-android/master/bin/lpunpack -O bin/lpunpack || \
+          wget -q https://github.com/phhusson/vendor_hardware_overlay/raw/master/lpunpack -O bin/lpunpack || true
+          
+          wget -q https://raw.githubusercontent.com/seba-ubuntu/7zx-android/master/bin/lpmake -O bin/lpmake || \
+          wget -q https://github.com/phhusson/vendor_hardware_overlay/raw/master/lpmake -O bin/lpmake || true
+
+          # Python-based fallback unpacker setup
+          pip3 install --upgrade pip
+          pip3 install backports.lzma
+
+          chmod +x bin/* || true
           echo "$GITHUB_WORKSPACE/bin" >> $GITHUB_PATH
 
       - name: Download & Extract Raw Inputs with Retry Validation
@@ -103,6 +112,7 @@ jobs:
       - name: Execute Build Pipeline
         run: |
           chmod +x ./scripts/build_m11.sh
+          [ -d "tools/extra" ] && chmod +x tools/extra/* 2>/dev/null || true
           ./scripts/build_m11.sh "${{ github.event.inputs.rom_name }}" "${{ github.event.inputs.include_magisk }}" "${{ github.event.inputs.gsi_name }}"
 
       - name: Upload Flashable ZIP Package
