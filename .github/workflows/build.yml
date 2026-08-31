@@ -1,0 +1,132 @@
+name: High-Speed Custom M11 ROM Compiler
+
+on:
+  workflow_dispatch:
+    inputs:
+      gsi_url:
+        description: 'Direct Download Link to GSI (.img / .xz / .7z)'
+        required: true
+        default: ''
+      base_boot_url:
+        description: 'Direct Link to working M11 boot.img (Kernel)'
+        required: true
+        default: ''
+      base_vendor_url:
+        description: 'Direct Link to working M11 vendor.img'
+        required: true
+        default: ''
+
+jobs:
+  compile:
+    runs-on: ubuntu-latest
+    steps:
+    - name: Checkout Source Repository
+      uses: actions/checkout@v4
+
+    - name: Deploy High-Speed Parallel Core Utilities
+      run: |
+        sudo apt-get update
+        sudo apt-get install -y aria2 pixz p7zip-full pigz android-sdk-libsparse-utils zip
+
+    - name: Allocate High-Speed Local RAM Workspace
+      run: |
+        mkdir -p workspace/out_zip
+
+    - name: Multi-Stream Simultaneous Input Sourcing
+      run: |
+        cd workspace
+        aria2c -x 16 -s 16 -j 3 \
+          "${{ github.event.inputs.gsi_url }}" \
+          "${{ github.event.inputs.base_boot_url }}" \
+          "${{ github.event.inputs.base_vendor_url }}"
+        
+        GSI_FILE=$(basename "${{ github.event.inputs.gsi_url }}")
+        BOOT_FILE=$(basename "${{ github.event.inputs.base_boot_url }}")
+        VENDOR_FILE=$(basename "${{ github.event.inputs.base_vendor_url }}")
+        
+        if [[ "$GSI_FILE" == *.xz ]]; then
+            pixz -d "$GSI_FILE" system.img
+        elif [[ "$GSI_FILE" == *.7z ]]; then
+            7z x "$GSI_FILE" -o.
+            mv *.img system.img
+        else
+            mv "$GSI_FILE" system.img
+        fi
+        
+        mv "$BOOT_FILE" boot.img
+        mv "$VENDOR_FILE" vendor.img
+
+    - name: Inject Standalone Toolchain Binaries
+      run: |
+        cd workspace
+        aria2c -x 8 -s 8 https://github.com -O lpmake
+        chmod +x lpmake
+
+    - name: Rapid Super Partition Construction
+      run: |
+        cd workspace
+        ./lpmake --metadata-size 65536 \
+                 --super-name super \
+                 --metadata-slots 2 \
+                 --device super:4187593152 \
+                 --group main:4185497600 \
+                 --partition system:readonly:0:main --image system=./system.img \
+                 --partition vendor:readonly:0:main --image vendor=./vendor.img \
+                 --sparse --output super.new.img
+
+    - name: Structural Text Matching Configuration
+      run: |
+        cp -r template/* workspace/out_zip/
+        GSI_URL_LOWER=$(echo "${{ github.event.inputs.gsi_url }}" | tr '[:upper:]' '[:lower:]')
+        FILENAME_EXT=$(basename "${{ github.event.inputs.gsi_url }}")
+        
+        ROM_FLAVOR="Custom_GSI"
+        if [[ "$GSI_URL_LOWER" == *pixelos* ]]; then ROM_FLAVOR="PixelOS"; fi
+        if [[ "$GSI_URL_LOWER" == *risingos* ]]; then ROM_FLAVOR="RisingOS_Revived"; fi
+        if [[ "$GSI_URL_LOWER" == *lineage* ]]; then ROM_FLAVOR="LineageOS"; fi
+        
+        ANDROID_VER="A14"
+        if [[ "$GSI_URL_LOWER" == *a15* || "$GSI_URL_LOWER" == *v15* || "$GSI_URL_LOWER" == *android15* ]]; then ANDROID_VER="A15"; fi
+        if [[ "$GSI_URL_LOWER" == *a13* || "$GSI_URL_LOWER" == *v13* || "$GSI_URL_LOWER" == *android13* ]]; then ANDROID_VER="A13"; fi
+        
+        echo "ROM_NAME=${ROM_FLAVOR}_${ANDROID_VER}_arm64-M11" > workspace/out_zip/META-INF/addons/info
+        echo "SOURCE_LINK=${{ github.event.inputs.gsi_url }}" >> workspace/out_zip/META-INF/addons/info
+        echo "${ROM_FLAVOR} built on $(date +'%Y%m%d')" > workspace/out_zip/META-INF/zbin/version
+        echo "gsi_source_file_name_target=$FILENAME_EXT" >> workspace/out_zip/META-INF/zbin/configs/file_types.config
+        echo "target_android_version=$ANDROID_VER" >> workspace/out_zip/META-INF/zbin/configs/units.config
+
+    - name: Compress Nested extra.zip Addon Package
+      run: |
+        cd workspace/out_zip/META-INF/addons/
+        if [ -d "extra_source" ]; then
+            cd extra_source
+            zip -r9 ../extra.zip .
+            cd ..
+            rm -rf extra_source
+        else
+            echo "[!] ERROR: extra_source block directory structure missing!"
+            exit 1
+        fi
+
+    - name: Multi-Threaded Heavy Compression Assemble
+      run: |
+        mv workspace/super.new.img workspace/out_zip/
+        mv workspace/boot.img workspace/out_zip/boot
+        
+        ROM_FLAVOR="Custom_GSI"
+        GSI_URL_LOWER=$(echo "${{ github.event.inputs.gsi_url }}" | tr '[:upper:]' '[:lower:]')
+        if [[ "$GSI_URL_LOWER" == *pixelos* ]]; then ROM_FLAVOR="PixelOS"; fi
+        if [[ "$GSI_URL_LOWER" == *risingos* ]]; then ROM_FLAVOR="RisingOS_Revived"; fi
+        if [[ "$GSI_URL_LOWER" == *lineage* ]]; then ROM_FLAVOR="LineageOS"; fi
+        
+        cd workspace/out_zip
+        zip -r -0 ../../temp_rom.zip .
+        mv ../../temp_rom.zip ../../${ROM_FLAVOR}_M11_Flashable.zip
+
+    - name: Upload Finished Build Artifacts
+      uses: actions/artifacts@v4
+      with:
+        name: M11-CustomROM-Package
+        path: "*.zip"
+        retention-days: 1
+
