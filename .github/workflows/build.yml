@@ -11,11 +11,6 @@ on:
         description: 'Direct Link to Official Samsung Stock Firmware (.zip)'
         required: true
         default: ''
-      include_gapps:
-        description: 'Tick to automatically download and inject Google Apps (GApps)'
-        required: false
-        type: boolean
-        default: false
       include_magisk:
         description: 'Tick to inject Magisk Root Execution binaries automatically'
         required: false
@@ -39,7 +34,6 @@ jobs:
         mkdir -p workspace/out_zip
         mkdir -p workspace/stock_extracted
         mkdir -p workspace/extracted_partitions
-        mkdir -p workspace/gapps_temp
 
     - name: Parallel Download Sourcing Engine
       run: |
@@ -82,17 +76,19 @@ jobs:
             exit 1
         fi
 
-    - name: Standalone Android Binaries Injection
+    - name: Set Up Local Repository Binaries (Dot/Slash Format)
       run: |
+        cp lpmake workspace/
+        cp lpunpack workspace/
         cd workspace
-        aria2c -x 8 -s 8 https://github.com -O lpmake
-        wget -q https://github.com -O lpunpack
-        chmod +x lpmake lpunpack
+        chmod +x ./lpmake ./lpunpack
+        echo "[+] Local repository binary toolchains configured safely."
 
     - name: Unpack Super and Deep-Analyze Architecture
       run: |
         cd workspace
         simg2img super_stock.img super_raw.img 2>/dev/null || mv super_stock.img super_raw.img
+        
         ./lpunpack super_raw.img extracted_partitions/
         
         SUPER_SIZE=$(stat -c%s super_raw.img)
@@ -118,51 +114,43 @@ jobs:
         rm -f extracted_partitions/system.img
         mv system.img extracted_partitions/system.img
 
-    - name: Dynamic Inject Optional Addon Sub-Modules (GApps & Magisk)
+    - name: Scrape Android OS Target Version
+      run: |
+        cd workspace
+        GSI_URL_LOWER=$(echo "${{ env.FINAL_GSI_URL }}" | tr '[:upper:]' '[:lower:]')
+        
+        ANDROID_VER="A14"
+        if [[ "$GSI_URL_LOWER" == *a16* || "$GSI_URL_LOWER" == *v16* || "$GSI_URL_LOWER" == *android16* ]]; then 
+            ANDROID_VER="A16"
+        elif [[ "$GSI_URL_LOWER" == *a15* || "$GSI_URL_LOWER" == *v15* || "$GSI_URL_LOWER" == *android15* || "$GSI_URL_LOWER" == *7\.1* ]]; then 
+            ANDROID_VER="A15"
+        fi
+        
+        echo "ANDROID_VER=$ANDROID_VER" >> $GITHUB_ENV
+
+    - name: Dynamic Inject Optional Addon Sub-Modules (Magisk Only)
       run: |
         cd workspace
         
-        # 1. Evaluate the GApps Injection Checkbox Flag
-        if [ "${{ github.event.inputs.include_gapps }}" = "true" ]; then
-            echo "[+] GApps option checked! Pulling optimized deployment payload down..."
-            # Pulling a light microG/GApps package frame to inject directly over systemic app trees
-            aria2c -x 12 -s 12 "https://github.com" -O gapps.zip 2>/dev/null || true
-            if [ -f "gapps.zip" ]; then
-                mkdir -p out_zip/META-INF/com/google/android/addons/
-                mv gapps.zip out_zip/META-INF/com/google/android/addons/gapps.zip
-                echo "[+] GApps package staged neatly inside structural flash layer."
-            fi
-        fi
-        
-        # 2. Evaluate the Magisk Injection Checkbox Flag
         if [ "${{ github.event.inputs.include_magisk }}" = "true" ]; then
-            echo "[+] Magisk options checked! Downloading official tracking binary logs..."
-            # Pull the official verified universal root binary installer payload down
+            echo "[+] Magisk option checked! Injecting root binaries..."
             aria2c -x 8 -s 8 "https://github.com" -O magisk.apk
             if [ -f "magisk.apk" ]; then
                 mkdir -p out_zip/META-INF/com/google/android/magisk/
-                # Rename to standard zip module format so custom recovery script loops read it smoothly
                 mv magisk.apk out_zip/META-INF/com/google/android/magisk/magisk.zip
-                echo "[+] Magisk injection payload armed inside recovery installation matrix blocks."
             fi
         fi
 
-    - name: Low-RAM Execution Guard and GMS Optimization
+    - name: Low-RAM Execution Guard Configuration
       run: |
         cd workspace
-        # Robust Safeguard Check: If our scanner locked the target as a 32-bit Binder phone (like M11),
-        # we execute memory footprint optimization routines to ensure it doesn't throttle background RAM.
         if [ "${{ env.IS_BINDER32 }}" = "true" ]; then
-            echo "[-] Running system tree RAM management modifications for low-resource hardware..."
-            # If the user chose to include heavy GApps on a 32-bit device, we alter configurations 
-            # to forcefully throttle background sync execution cycles upon boot.
             echo "ro.config.low_ram=true" >> out_zip/META-INF/zbin/configs/file_types.config
             echo "dalvik.vm.heapstartsize=8m" >> out_zip/META-INF/zbin/configs/file_types.config
             echo "dalvik.vm.heapgrowthlimit=128m" >> out_zip/META-INF/zbin/configs/file_types.config
-            echo "[+] Baseline memory profiles hardened successfully."
         fi
 
-    - name: Universal Dynamic Super Partition Reconstruction
+    - name: Universal Dynamic Super Partition Reconstruction (Dot/Slash Format)
       run: |
         cd workspace
         cd extracted_partitions
@@ -182,25 +170,16 @@ jobs:
     - name: Structural Text Matching Configuration
       run: |
         cp -r template/* workspace/out_zip/ 2>/dev/null || true
-        GSI_URL_LOWER=$(echo "${{ env.FINAL_GSI_URL }}" | tr '[:upper:]' '[:lower:]')
         FILENAME_EXT=$(basename "${{ env.FINAL_GSI_URL }}" | cut -d'?' -f1)
         
-        ROM_FLAVOR="Custom_GSI"
-        if [[ "$GSI_URL_LOWER" == *pixelos* ]]; then ROM_FLAVOR="PixelOS"; fi
-        if [[ "$GSI_URL_LOWER" == *risingos* ]]; then ROM_FLAVOR="RisingOS_Revived"; fi
-        if [[ "$GSI_URL_LOWER" == *lineage* ]]; then ROM_FLAVOR="LineageOS"; fi
-        
-        ANDROID_VER="A14"
-        if [[ "$GSI_URL_LOWER" == *a15* || "$GSI_URL_LOWER" == *v15* || "$GSI_URL_LOWER" == *android15* || "$GSI_URL_LOWER" == *7\.1* ]]; then ANDROID_VER="A15"; fi
-        
-        echo "ROM_NAME=${ROM_FLAVOR}_${ANDROID_VER}_${{ env.DETECTED_ARCH }}" > workspace/out_zip/META-INF/addons/info
+        echo "ROM_NAME=Custom_GSI_${{ env.ANDROID_VER }}_${{ env.DETECTED_ARCH }}" > workspace/out_zip/META-INF/addons/info
         echo "SOURCE_LINK=${{ env.FINAL_GSI_URL }}" >> workspace/out_zip/META-INF/addons/info
         echo "HARDWARE_ABI_RESTRICTION=${{ env.DETECTED_ARCH }}" >> workspace/out_zip/META-INF/addons/info
-        echo "${ROM_FLAVOR} built on $(date +'%Y%m%d')" > workspace/out_zip/META-INF/zbin/version
+        echo "Custom ROM built on $(date +'%Y%m%d')" > workspace/out_zip/META-INF/zbin/version
         
         echo "gsi_source_file_name_target=$FILENAME_EXT" >> workspace/out_zip/META-INF/zbin/configs/file_types.config
         echo "detected_device_binder32_lock=${{ env.IS_BINDER32 }}" >> workspace/out_zip/META-INF/zbin/configs/file_types.config
-        echo "target_android_version=$ANDROID_VER" >> workspace/out_zip/META-INF/zbin/configs/units.config
+        echo "target_android_version=${{ env.ANDROID_VER }}" >> workspace/out_zip/META-INF/zbin/configs/units.config
         echo "active_architecture_profile=${{ env.DETECTED_ARCH }}" >> workspace/out_zip/META-INF/zbin/configs/units.config
 
     - name: Compress Nested extra.zip Addon Package
@@ -215,3 +194,16 @@ jobs:
 
     - name: Multi-Threaded Heavy Compression Assemble
       run: |
+        mv workspace/super.new.img workspace/out_zip/
+        mv workspace/boot workspace/out_zip/boot
+        
+        cd workspace/out_zip
+        zip -r -0 ../../temp_rom.zip .
+        mv ../../temp_rom.zip ../../CustomROM_${{ env.ANDROID_VER }}_${{ env.DETECTED_ARCH }}_Flashable.zip
+
+    - name: Upload Finished Build Artifacts
+      uses: actions/artifacts@v4
+      with:
+        name: Universal-Samsung-ROM-Package
+        path: "*.zip"
+        retention-days: 1
