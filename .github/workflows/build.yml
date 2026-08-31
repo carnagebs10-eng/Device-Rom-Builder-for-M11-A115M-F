@@ -43,7 +43,6 @@ jobs:
           "${{ github.event.inputs.samsung_firmware_url }}"
         
         GSI_FILE=$(basename "${{ github.event.inputs.gsi_url }}")
-        FW_FILE=$(basename "${{ github.event.inputs.samsung_firmware_url }}")
         
         if [[ "$GSI_FILE" == *.xz ]]; then
             pixz -d "$GSI_FILE" system.img
@@ -51,16 +50,26 @@ jobs:
             7z x "$GSI_FILE" -o.
             mv *.img system.img
         else
-            mv "$GSI_FILE" system.img
+            mv "$GSI_FILE" system.img 2>/dev/null || true
         fi
         
         echo "FINAL_GSI_URL=${{ github.event.inputs.gsi_url }}" >> $GITHUB_ENV
-        echo "FW_NAME=$FW_FILE" >> $GITHUB_ENV
 
     - name: Extract Samsung AP Firmware Layers
       run: |
         cd workspace
-        7z x "$FW_NAME" -ostock_extracted/
+        echo "[-] Searching dynamically for downloaded firmware zip layout..."
+        
+        # Robust Dynamic Matching: Find any file in the workspace ending in .zip or matching firmware structures
+        ZIP_MATCH=$(ls *.zip 2>/dev/null | head -n 1 || ls download* 2>/dev/null | head -n 1)
+        
+        if [ -n "$ZIP_MATCH" ]; then
+            echo "[+] Found Target Firmware Archive: $ZIP_MATCH"
+            7z x "$ZIP_MATCH" -ostock_extracted/
+        else
+            echo "[!] ERROR: Downloaded firmware archive file could not be mapped!"
+            exit 1
+        fi
         
         cd stock_extracted
         AP_FILE=$(ls AP_*.tar.md5 2>/dev/null || ls AP_*.tar 2>/dev/null)
@@ -134,7 +143,7 @@ jobs:
         
         if [ "${{ github.event.inputs.include_magisk }}" = "true" ]; then
             echo "[+] Magisk option checked! Injecting root binaries..."
-            aria2c -x 8 -s 8 "https://github.com" -O magisk.apk
+            aria2c -x 8 -s 8 "https://github.com/topjohnwu/Magisk/releases/download/v30.7/Magisk-v30.7.apk" -O magisk.apk
             if [ -f "magisk.apk" ]; then
                 mkdir -p out_zip/META-INF/com/google/android/magisk/
                 mv magisk.apk out_zip/META-INF/com/google/android/magisk/magisk.zip
