@@ -134,7 +134,7 @@ jobs:
         
         if [ "${{ github.event.inputs.include_magisk }}" = "true" ]; then
             echo "[+] Magisk option checked! Injecting root binaries..."
-            aria2c -x 8 -s 8 "https://github.com" -O magisk.apk
+            aria2c -x 8 -s 8 "https://github.com/topjohnwu/Magisk/releases/download/v30.7/Magisk-v30.7.apk" -O magisk.apk
             if [ -f "magisk.apk" ]; then
                 mkdir -p out_zip/META-INF/com/google/android/magisk/
                 mv magisk.apk out_zip/META-INF/com/google/android/magisk/magisk.zip
